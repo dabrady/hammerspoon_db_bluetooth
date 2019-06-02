@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <LuaSkin/LuaSkin.h>
+#import <IOBluetooth/IOBluetooth.h>
 
 // The many faces of 'static'. :P
 #define internal static
@@ -13,8 +14,25 @@ int refTable;
 @property int callbackRef;
 @end
 
+internal void lua_print(const char *string) {
+  LuaSkin *Skin = [LuaSkin shared];
+  lua_State *L = [Skin L];
+
+  lua_getglobal(L, "lua_print");
+  lua_pushstring(L, string);
+  lua_pcall(L, 1, 0, 0);
+}
+
 @implementation HSBluetoothWatcher
-// TODO
+- (void) ProcessMessage: (id)note {
+  // Hammerspoon crashes when Lua code doesn't execute on the main thread.
+  [self performSelectorOnMainThread:@selector(_ProcessMessage:)
+                         withObject:note
+                      waitUntilDone:YES];
+}
+- (void) _ProcessMessage: (__unused NSNotification *)note {
+  lua_print("processing message!");
+}
 @end
 
 /**
@@ -58,6 +76,49 @@ internal int NewWatcher(lua_State *L) {
   return(1);
 }
 
+internal int userdata_StartWatcher(lua_State *L) {
+  void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
+  if(!UserData) {
+    return(0);
+  }
+
+  // Casting C pointers to an Objective-C pointer requires a 'bridged' cast.
+  HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
+  NSNotificationCenter *Center = [[NSWorkspace sharedWorkspace] notificationCenter];
+
+  [Center addObserver:BTWatcher
+             selector:@selector(ProcessMessage:)
+                 name:NSWorkspaceDidActivateApplicationNotification
+               object:nil];
+  // [Center addObserver:BTWatcher
+  //            selector:@selector(ProcessMessage:)
+  //                name:IOBluetoothL2CAPChannelTerminatedNotification
+  //              object:nil];
+
+  // Push the watcher back on the stack to allow method chaining.
+  lua_settop(L, 1);
+  return(1);
+}
+
+internal int userdata_StopWatcher(lua_State *L) {
+  void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
+  if(!UserData) {
+    return(0);
+  }
+
+  // Casting C pointers to an Objective-C pointer requires a 'bridged' cast.
+  HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
+  NSNotificationCenter *Center = [[NSWorkspace sharedWorkspace] notificationCenter];
+
+  [Center removeObserver:BTWatcher
+                    name:NSWorkspaceDidActivateApplicationNotification
+               object:nil];
+
+  // Push the watcher back on the stack to allow method chaining.
+  lua_settop(L, 1);
+  return(1);
+}
+
 /**
    Custom string representation of this module's "userdata" object, if any.
 
@@ -65,7 +126,7 @@ internal int NewWatcher(lua_State *L) {
    This function should push a string onto the Lua stack and return 1 to indicate
    one result is being returned.
 */
-internal int userdata_tostring(lua_State *L) {
+internal int userdata_ToString(lua_State *L) {
   NSString *stringRep = [NSString stringWithFormat:@"%s: (%p)", USERDATA_TAG, lua_topointer(L, 1)];
   lua_pushstring(L, [stringRep UTF8String]);
   return(1);
@@ -76,6 +137,8 @@ internal int userdata_tostring(lua_State *L) {
    collected.
 */
 internal int userdata_gc(lua_State *L) {
+  userdata_StopWatcher(L);
+
   // Verify the userdata is ours.
   void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
   // Grab a pointer to our bluetooth watcher.
@@ -111,7 +174,9 @@ internal int userdata_gc(lua_State *L) {
 */
 global_variable const luaL_Reg userdata_publicAPI[] =
   {
-   {"__tostring", userdata_tostring},
+   {"start", userdata_StartWatcher},
+   {"stop", userdata_StopWatcher},
+   {"__tostring", userdata_ToString},
    {"__gc", userdata_gc},
    {0, 0} // or perhaps {NULL, NULL}
   };
