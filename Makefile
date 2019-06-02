@@ -1,7 +1,7 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
-current_dir := $(notdir $(patsubst %/,%,$(dir $(mkfile_path))))
+# current_dir := $(notdir $(patsubst %/,%,$(dir $(mkfile_path))))
 
-MODULE := $(current_dir)
+MODULE := bluetooth #$(current_dir)
 PREFIX ?= ~/.hammerspoon/hs/_db
 HS_APPLICATION ?= /Applications
 
