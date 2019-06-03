@@ -70,7 +70,8 @@ int refTable;
 
 @interface HSBluetoothWatcher: NSObject
 @property int callbackRef;
-@property IOBluetoothUserNotification *btConnectReceipt;
+@property IOBluetoothUserNotification *connectReceipt;
+@property NSMutableArray *deviceConnections;
 @end
 
 @implementation HSBluetoothWatcher
@@ -93,9 +94,9 @@ int refTable;
                  device:(IOBluetoothDevice *)device {
 
   [LuaSkin logDebug:[NSString stringWithFormat:@"Device connected: %@", [device name]]];
-  // TODO: Figure out how to clean these up during GC.
-  [device registerForDisconnectNotification:self
-                                   selector:@selector(HandleDisconnect:device:)];
+  IOBluetoothUserNotification *deviceConnection = [device registerForDisconnectNotification:self
+                                                                                  selector:@selector(HandleDisconnect:device:)];
+  [_deviceConnections addObject:deviceConnection];
 
   // TODO: Invoke callback with device info
 }
@@ -104,6 +105,7 @@ int refTable;
                     device:(IOBluetoothDevice *)device {
   [LuaSkin logDebug:[NSString stringWithFormat:@"Device disconnected: %@", [device name]]];
   [note unregister];
+  [_deviceConnections removeObjectIdenticalTo:note];
   // TODO: Invoke callback with device info
 }
 @end
@@ -130,7 +132,7 @@ internal int HSBluetooth_NewWatcher(lua_State *L) {
   // bluetooth watcher reference.
   BTWatcher.callbackRef = [Skin luaRef:refTable];
 
-  BTWatcher.btConnectReceipt = nil;
+  BTWatcher.connectReceipt = nil;
 
   /* Give our new bluetooth listener back to Lua. */
   // Allocate a new userdata ref onto the stack.
@@ -163,8 +165,9 @@ internal int userdata_HSBluetoothWatcher_Start(lua_State *L) {
   HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
 
   // Register for bluetooth connection notifications.
-  BTWatcher.btConnectReceipt = [IOBluetoothDevice registerForConnectNotifications:BTWatcher
-                                                                         selector:@selector(HandleConnect:device:)];
+  BTWatcher.deviceConnections = [[NSMutableArray alloc] init];
+  BTWatcher.connectReceipt = [IOBluetoothDevice registerForConnectNotifications:BTWatcher
+                                                                       selector:@selector(HandleConnect:device:)];
 
   // Push the watcher back on the stack to allow method chaining.
   lua_settop(L, 1);
@@ -181,10 +184,19 @@ internal int userdata_HSBluetoothWatcher_Stop(lua_State *L) {
   HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
 
   // Unregister for bluetooth connection notfications.
-  if(BTWatcher.btConnectReceipt) {
-    [BTWatcher.btConnectReceipt unregister];
-    // TODO: How to unregister all _dis_connection notifications?
+  if(BTWatcher.connectReceipt) {
+    [BTWatcher.connectReceipt unregister];
   }
+  BTWatcher.connectReceipt = nil;
+
+  // Unregister from device disconnect notifications.
+  if(BTWatcher.deviceConnections) {
+    for(id connection in BTWatcher.deviceConnections) {
+      [LuaSkin logDebug:@"unregistering device connection"];
+      [connection unregister];
+    }
+  }
+  BTWatcher.deviceConnections = nil;
 
   // Push the watcher back on the stack to allow method chaining.
   lua_settop(L, 1);
@@ -219,13 +231,6 @@ internal int userdata_HSBluetoothWatcher_GC(lua_State *L) {
 
   // Free the callback we kept a reference to in our `refTable`.
   BTWatcher.callbackRef = [[LuaSkin shared] luaUnref:refTable ref:BTWatcher.callbackRef];
-
-  // Unregister for bluetooth connection notifications.
-  if(BTWatcher.btConnectReceipt) {
-    [BTWatcher.btConnectReceipt unregister];
-    // Hammerspoon crashes when Lua code doesn't execute on the main thread.
-  }
-  BTWatcher.btConnectReceipt = nil;
 
   // Free our watcher.
   BTWatcher = nil;
