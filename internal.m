@@ -10,40 +10,109 @@
 #define USERDATA_TAG "hs._db.bluetooth"
 int refTable;
 
+/***********/
+/* Helpers */
+/***********/
+
+// NOTE: I was unable to successfully separate this category into a separate file and link it.
+@interface NSObject (VarargPerformSelectorOnMainThread)
+/** A helper for executing functions which require multiple arguments, on the main thread. */
+- (void) performSelectorOnMainThread:(SEL)selector
+                       waitUntilDone:(BOOL)wait
+                         withObjects:(NSObject *)firstObject, ... NS_REQUIRES_NIL_TERMINATION;
+@end
+
+@implementation NSObject (VarargPerformSelectorOnMainThread)
+/** A helper for executing functions which require multiple arguments, on the main thread. */
+- (void) performSelectorOnMainThread:(SEL)selector
+                       waitUntilDone:(BOOL)wait
+                         withObjects:(NSObject *)firstObject, ... {
+
+  // First attempt to create the method signature with the provided selector.
+  NSMethodSignature *signature = [self methodSignatureForSelector:selector];
+
+  if (!signature) {
+    NSLog(@"NSObject: Method signature could not be created.");
+    return;
+  }
+
+  // Next we create the invocation that will actually call the selector.
+  NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+  [invocation setTarget:self];
+  [invocation setSelector:selector];
+
+  // Now add arguments from the variable list of objects (nil terminated).
+  va_list args;
+  va_start(args, firstObject);
+  int nextArgIndex = 2;
+
+  for (NSObject *object = firstObject;
+       object != nil;
+       object = va_arg(args, NSObject*)) {
+    if (object != [NSNull null]) {
+      [invocation setArgument:&object atIndex:nextArgIndex];
+    }
+
+    nextArgIndex++;
+  }
+
+  va_end(args);
+
+  // Finally, we invoke the selector with the arguments we've set.
+  [invocation retainArguments];
+  [invocation performSelectorOnMainThread:@selector(invoke) withObject:nil waitUntilDone:wait];
+}
+@end
+
+/************/
+/* Userdata */
+/************/
+
 @interface HSBluetoothWatcher: NSObject
 @property int callbackRef;
+@property IOBluetoothUserNotification *btConnectReceipt;
 @end
-
-internal void lua_print(const char *string) {
-  LuaSkin *Skin = [LuaSkin shared];
-  lua_State *L = [Skin L];
-
-  lua_getglobal(L, "lua_print");
-  lua_pushstring(L, string);
-  lua_pcall(L, 1, 0, 0);
-}
 
 @implementation HSBluetoothWatcher
-- (void) ProcessMessage: (id)note {
+- (void) HandleConnect:(IOBluetoothUserNotification *)note
+                device:(IOBluetoothDevice *)device {
   // Hammerspoon crashes when Lua code doesn't execute on the main thread.
-  [self performSelectorOnMainThread:@selector(_ProcessMessage:)
-                         withObject:note
-                      waitUntilDone:YES];
+  [self performSelectorOnMainThread:@selector(_HandleConnect:device:)
+                      waitUntilDone:YES
+                        withObjects:note, device, nil];
 }
-- (void) _ProcessMessage: (__unused NSNotification *)note {
-  lua_print("processing message!");
+
+- (void) HandleDisconnect:(IOBluetoothUserNotification *)note
+                   device:(IOBluetoothDevice *)device {
+  [self performSelectorOnMainThread:@selector(_HandleDisconnect:device:)
+                      waitUntilDone:YES
+                        withObjects:note, device, nil];
+}
+
+- (void) _HandleConnect:(__unused IOBluetoothUserNotification *)note
+                 device:(IOBluetoothDevice *)device {
+
+  [LuaSkin logDebug:[NSString stringWithFormat:@"Device connected: %@", [device name]]];
+  // TODO: Figure out how to clean these up during GC.
+  [device registerForDisconnectNotification:self
+                                   selector:@selector(HandleDisconnect:device:)];
+
+  // TODO: Invoke callback with device info
+}
+
+- (void) _HandleDisconnect:(__unused IOBluetoothUserNotification *)note
+                    device:(IOBluetoothDevice *)device {
+  [LuaSkin logDebug:[NSString stringWithFormat:@"Device disconnected: %@", [device name]]];
+  [note unregister];
+  // TODO: Invoke callback with device info
 }
 @end
 
-/**
-   Example Lua entrypoint:
+/******************/
+/* Lua Module API */
+/******************/
 
-   internal int ModuleFunction(lua_State *L) {
-     // ...
-     return(1); // the number of results pushed onto the stack
-   }
-*/
-internal int NewWatcher(lua_State *L) {
+internal int HSBluetooth_NewWatcher(lua_State *L) {
   // Get a reference to our Lua 'skin', our interface with Lua.
   LuaSkin *Skin = [LuaSkin shared];
   // Verify that the first argument passed to us is a Lua function.
@@ -61,6 +130,8 @@ internal int NewWatcher(lua_State *L) {
   // bluetooth watcher reference.
   BTWatcher.callbackRef = [Skin luaRef:refTable];
 
+  BTWatcher.btConnectReceipt = nil;
+
   /* Give our new bluetooth listener back to Lua. */
   // Allocate a new userdata ref onto the stack.
   void **UserData = lua_newuserdata(L, sizeof(id*));
@@ -76,31 +147,31 @@ internal int NewWatcher(lua_State *L) {
   return(1);
 }
 
-internal int userdata_StartWatcher(lua_State *L) {
+/*****************************/
+/* Bluetooth Watcher Lua API */
+/*****************************/
+
+internal int userdata_HSBluetoothWatcher_Start(lua_State *L) {
   void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
   if(!UserData) {
+    [LuaSkin logDebug:@"invalid userdata"];
     return(0);
   }
+  [LuaSkin logDebug:@"starting watcher"];
 
   // Casting C pointers to an Objective-C pointer requires a 'bridged' cast.
   HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
-  NSNotificationCenter *Center = [[NSWorkspace sharedWorkspace] notificationCenter];
 
-  [Center addObserver:BTWatcher
-             selector:@selector(ProcessMessage:)
-                 name:NSWorkspaceDidActivateApplicationNotification
-               object:nil];
-  // [Center addObserver:BTWatcher
-  //            selector:@selector(ProcessMessage:)
-  //                name:IOBluetoothL2CAPChannelTerminatedNotification
-  //              object:nil];
+  // Register for bluetooth connection notifications.
+  BTWatcher.btConnectReceipt = [IOBluetoothDevice registerForConnectNotifications:BTWatcher
+                                                                         selector:@selector(HandleConnect:device:)];
 
   // Push the watcher back on the stack to allow method chaining.
   lua_settop(L, 1);
   return(1);
 }
 
-internal int userdata_StopWatcher(lua_State *L) {
+internal int userdata_HSBluetoothWatcher_Stop(lua_State *L) {
   void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
   if(!UserData) {
     return(0);
@@ -108,11 +179,12 @@ internal int userdata_StopWatcher(lua_State *L) {
 
   // Casting C pointers to an Objective-C pointer requires a 'bridged' cast.
   HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
-  NSNotificationCenter *Center = [[NSWorkspace sharedWorkspace] notificationCenter];
 
-  [Center removeObserver:BTWatcher
-                    name:NSWorkspaceDidActivateApplicationNotification
-               object:nil];
+  // Unregister for bluetooth connection notfications.
+  if(BTWatcher.btConnectReceipt) {
+    [BTWatcher.btConnectReceipt unregister];
+    // TODO: How to unregister all _dis_connection notifications?
+  }
 
   // Push the watcher back on the stack to allow method chaining.
   lua_settop(L, 1);
@@ -126,7 +198,7 @@ internal int userdata_StopWatcher(lua_State *L) {
    This function should push a string onto the Lua stack and return 1 to indicate
    one result is being returned.
 */
-internal int userdata_ToString(lua_State *L) {
+internal int userdata_HSBluetoothWatcher_ToString(lua_State *L) {
   NSString *stringRep = [NSString stringWithFormat:@"%s: (%p)", USERDATA_TAG, lua_topointer(L, 1)];
   lua_pushstring(L, [stringRep UTF8String]);
   return(1);
@@ -136,16 +208,25 @@ internal int userdata_ToString(lua_State *L) {
    Special cleanup to be done whenever a specific userdata instance is garbage
    collected.
 */
-internal int userdata_gc(lua_State *L) {
-  userdata_StopWatcher(L);
+internal int userdata_HSBluetoothWatcher_GC(lua_State *L) {
+  userdata_HSBluetoothWatcher_Stop(L);
 
   // Verify the userdata is ours.
   void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
   // Grab a pointer to our bluetooth watcher.
   // `__bridge_transfer` tells the ARC memory manager to release it when we're done.
   HSBluetoothWatcher *BTWatcher = (__bridge_transfer HSBluetoothWatcher *)(*UserData);
+
   // Free the callback we kept a reference to in our `refTable`.
   BTWatcher.callbackRef = [[LuaSkin shared] luaUnref:refTable ref:BTWatcher.callbackRef];
+
+  // Unregister for bluetooth connection notifications.
+  if(BTWatcher.btConnectReceipt) {
+    [BTWatcher.btConnectReceipt unregister];
+    // Hammerspoon crashes when Lua code doesn't execute on the main thread.
+  }
+  BTWatcher.btConnectReceipt = nil;
+
   // Free our watcher.
   BTWatcher = nil;
 
@@ -172,12 +253,12 @@ internal int userdata_gc(lua_State *L) {
 /**
    Userdata API, used as its Lua metatable.
 */
-global_variable const luaL_Reg userdata_publicAPI[] =
+global_variable const luaL_Reg userdata_HSBluetoothWatcher_publicAPI[] =
   {
-   {"start", userdata_StartWatcher},
-   {"stop", userdata_StopWatcher},
-   {"__tostring", userdata_ToString},
-   {"__gc", userdata_gc},
+   {"start", userdata_HSBluetoothWatcher_Start},
+   {"stop", userdata_HSBluetoothWatcher_Stop},
+   {"__tostring", userdata_HSBluetoothWatcher_ToString},
+   {"__gc", userdata_HSBluetoothWatcher_GC},
    {0, 0} // or perhaps {NULL, NULL}
   };
 
@@ -186,7 +267,7 @@ global_variable const luaL_Reg userdata_publicAPI[] =
 */
 global_variable luaL_Reg publicAPI[] =
   {
-   {"new", NewWatcher},
+   {"newWatcher", HSBluetooth_NewWatcher},
    {0, 0} // or perhaps {NULL, NULL}
   };
 
@@ -200,6 +281,6 @@ int luaopen_hs__db_bluetooth_internal(lua_State __unused *L) {
   refTable = [skin registerLibraryWithObject:USERDATA_TAG
                                    functions:publicAPI
                                metaFunctions:nil
-                             objectFunctions:userdata_publicAPI];
+                             objectFunctions:userdata_HSBluetoothWatcher_publicAPI];
   return(1);
 }
