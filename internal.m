@@ -74,6 +74,41 @@ int refTable;
 @property NSMutableArray *deviceConnections;
 @end
 
+@interface HSBluetoothDevice : NSObject
++ (NSString *) GetDeviceClass:(IOBluetoothDevice *)device;
++ (NSDictionary *) GetProperties:(IOBluetoothDevice *)device;
+@end
+
+@implementation HSBluetoothDevice
++ (NSString *) GetDeviceClass:(IOBluetoothDevice *)device {
+  BluetoothClassOfDevice deviceClassRef = [device classOfDevice];
+  // TODO: Make this an enum and expose it?
+  NSString *deviceClass;
+  if (deviceClassRef == 0) {
+    deviceClass = @"uncategorized";
+  } else if (deviceClassRef & (1 << 21)) {
+    deviceClass = @"audio";
+  } else if (deviceClassRef & ((1 << 10) | (1 << 8))) {
+    deviceClass = @"peripheral";
+  } else if (deviceClassRef & (1 << 9)) {
+    deviceClass = @"phone";
+  } else {
+    deviceClass = [NSString stringWithFormat:@"%#x (unrecognized)", deviceClassRef];
+  }
+  return deviceClass;
+}
+
++ (NSDictionary *) GetProperties:(IOBluetoothDevice *)device {
+  NSDictionary *deviceProperties = @
+    {
+     @"name": [device name],
+     @"isConnected": [NSNumber numberWithBool:[device isConnected]],
+     @"deviceClass": [HSBluetoothDevice GetDeviceClass:device],
+    };
+  return deviceProperties;
+}
+@end
+
 @implementation HSBluetoothWatcher
 - (void) HandleConnect:(IOBluetoothUserNotification *)note
                 device:(IOBluetoothDevice *)device {
@@ -93,20 +128,42 @@ int refTable;
 - (void) _HandleConnect:(__unused IOBluetoothUserNotification *)note
                  device:(IOBluetoothDevice *)device {
 
-  [LuaSkin logDebug:[NSString stringWithFormat:@"Device connected: %@", [device name]]];
-  IOBluetoothUserNotification *deviceConnection = [device registerForDisconnectNotification:self
-                                                                                  selector:@selector(HandleDisconnect:device:)];
+  // Track device disconnect.
+  IOBluetoothUserNotification *deviceConnection =
+    [device registerForDisconnectNotification:self
+                                     selector:@selector(HandleDisconnect:device:)];
   [_deviceConnections addObject:deviceConnection];
 
-  // TODO: Invoke callback with device info
+  if (_callbackRef != LUA_NOREF) {
+    [self _CallbackWithDevice:device];
+  }
 }
 
 - (void) _HandleDisconnect:(__unused IOBluetoothUserNotification *)note
                     device:(IOBluetoothDevice *)device {
-  [LuaSkin logDebug:[NSString stringWithFormat:@"Device disconnected: %@", [device name]]];
   [note unregister];
   [_deviceConnections removeObjectIdenticalTo:note];
-  // TODO: Invoke callback with device info
+
+  if (_callbackRef != LUA_NOREF) {
+    [self _CallbackWithDevice:device];
+  }
+}
+
+- (void) _CallbackWithDevice:(IOBluetoothDevice *)device {
+  LuaSkin *Skin = [LuaSkin shared];
+  lua_State *L = [Skin L];
+  NSDictionary *deviceProperties = [HSBluetoothDevice GetProperties:device];
+
+  // Push our callback and its arguments onto the stack, then call it.
+  [Skin pushLuaRef:refTable ref:_callbackRef];
+  [Skin pushNSObject:deviceProperties];
+
+  BOOL callSuccessful = [Skin protectedCallAndTraceback:1 nresults: 0];
+  if (!callSuccessful) {
+    const char *errorMsg = lua_tostring(L, -1);
+    [Skin logError:[NSString stringWithFormat:@"%s: %s", USERDATA_TAG, errorMsg]];
+    lua_pop(L, 1); // consume the error message
+  }
 }
 @end
 
