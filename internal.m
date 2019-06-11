@@ -213,10 +213,10 @@ internal int HSBluetooth_NewWatcher(lua_State *L) {
 internal int userdata_HSBluetoothWatcher_Start(lua_State *L) {
   void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
   if(!UserData) {
-    [LuaSkin logDebug:@"invalid userdata"];
+    // [LuaSkin logDebug:@"invalid userdata"];
     return(0);
   }
-  [LuaSkin logDebug:@"starting watcher"];
+  // [LuaSkin logDebug:@"starting watcher"];
 
   // Casting C pointers to an Objective-C pointer requires a 'bridged' cast.
   HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
@@ -249,7 +249,6 @@ internal int userdata_HSBluetoothWatcher_Stop(lua_State *L) {
   // Unregister from device disconnect notifications.
   if(BTWatcher.deviceConnections) {
     for(id connection in BTWatcher.deviceConnections) {
-      [LuaSkin logDebug:@"unregistering device connection"];
       [connection unregister];
     }
   }
