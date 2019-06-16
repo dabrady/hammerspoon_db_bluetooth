@@ -1,6 +1,6 @@
-#import <Cocoa/Cocoa.h>
-#import <LuaSkin/LuaSkin.h>
-#import <IOBluetooth/IOBluetooth.h>
+@import Cocoa;
+@import LuaSkin;
+@import IOBluetooth;
 
 // The many faces of 'static'. Readability is important.
 #define internal static
