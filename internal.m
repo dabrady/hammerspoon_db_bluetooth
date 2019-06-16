@@ -180,6 +180,21 @@ global_variable int refTable;
 }
 @end
 
+id ToHSBluetoothWatcherFromUserdata(lua_State *L, int index) {
+  LuaSkin *Skin = [LuaSkin shared];
+
+  void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
+  HSBluetoothWatcher *BTWatcher;
+  if(UserData) {
+    BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
+  } else {
+    [Skin logError:[NSString stringWithFormat:@"expected %s object, found %s", USERDATA_TAG, lua_typename(L, lua_type(L, index))]];
+  }
+
+  return(BTWatcher);
+}
+
+
 /******************/
 /* Lua Module API */
 /******************/
@@ -224,15 +239,12 @@ internal int HSBluetooth_NewWatcher(lua_State *L) {
 /*****************************/
 
 internal int userdata_HSBluetoothWatcher_Start(lua_State *L) {
-  void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
-  if(!UserData) {
-    // [LuaSkin logDebug:@"invalid userdata"];
-    return(0);
-  }
-  // [LuaSkin logDebug:@"starting watcher"];
+  LuaSkin *Skin = [LuaSkin shared];
+  [Skin checkArgs:LS_TUSERDATA, USERDATA_TAG, LS_TBREAK];
 
-  // Casting C pointers to an Objective-C pointer requires a 'bridged' cast.
-  HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
+  HSBluetoothWatcher *BTWatcher = [Skin toNSObjectAtIndex:1];
+
+  // [LuaSkin logDebug:@"starting watcher"];
 
   // Register for bluetooth connection notifications.
   BTWatcher.connectReceipt = [IOBluetoothDevice registerForConnectNotifications:BTWatcher
@@ -244,13 +256,10 @@ internal int userdata_HSBluetoothWatcher_Start(lua_State *L) {
 }
 
 internal int userdata_HSBluetoothWatcher_Stop(lua_State *L) {
-  void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
-  if (!UserData) {
-    return(0);
-  }
+  LuaSkin *Skin = [LuaSkin shared];
+  [Skin checkArgs:LS_TUSERDATA, USERDATA_TAG, LS_TBREAK];
 
-  // Casting C pointers to an Objective-C pointer requires a 'bridged' cast.
-  HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
+  HSBluetoothWatcher *BTWatcher = [Skin toNSObjectAtIndex:1];
 
   // Unregister for bluetooth connection notfications.
   if (BTWatcher.connectReceipt) {
@@ -355,5 +364,9 @@ int luaopen_hs__db_bluetooth_internal(lua_State __unused *L) {
                                    functions:publicAPI
                                metaFunctions:nil
                              objectFunctions:userdata_HSBluetoothWatcher_publicAPI];
+  [Skin registerLuaObjectHelper:ToHSBluetoothWatcherFromUserdata
+                       forClass:"HSBluetoothWatcher"
+            withUserdataMapping:USERDATA_TAG];
+
   return(1);
 }
