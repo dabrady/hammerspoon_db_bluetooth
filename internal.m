@@ -271,9 +271,9 @@ id ToHSBluetoothWatcherFromUserdata(lua_State *L, int index) {
 /* Lua Module API */
 /******************/
 
-internal int HSBluetooth_ReadableDeviceProperties(__unused lua_State *L) {
+internal int pushReadableDeviceProperties(__unused lua_State *L) {
   LuaSkin *Skin = [LuaSkin shared];
-  [Skin pushNSObject:readableDeviceProperties];
+  [Skin pushNSObject:[readableDeviceProperties allObjects]];
   return(1);
 }
 
@@ -483,7 +483,6 @@ global_variable const luaL_Reg userdata_HSBluetoothWatcher_publicAPI[] =
 global_variable luaL_Reg publicAPI[] =
   {
    {"newWatcher", HSBluetooth_NewWatcher},
-   {"readableDeviceProperties", HSBluetooth_ReadableDeviceProperties},
    {0, 0} // or perhaps {NULL, NULL}
   };
 
@@ -492,7 +491,7 @@ global_variable luaL_Reg publicAPI[] =
 
    This function registers our public API with the LuaSkin bridge for Hammerspoon.
  */
-int luaopen_hs__db_bluetooth_internal(lua_State __unused *L) {
+int luaopen_hs__db_bluetooth_internal(lua_State *L) {
   LuaSkin *Skin = [LuaSkin shared];
   refTable = [Skin registerLibraryWithObject:USERDATA_TAG
                                    functions:publicAPI
@@ -517,6 +516,8 @@ int luaopen_hs__db_bluetooth_internal(lua_State __unused *L) {
                                     @"isFavorite",
                                     @"isPaired",
                                     nil];
+  // Create a constant: `hs._db.bluetooth.readableDeviceProperties[]`
+  pushReadableDeviceProperties(L); lua_setfield(L, -2, "readableDeviceProperties");
 
   return(1);
 }
