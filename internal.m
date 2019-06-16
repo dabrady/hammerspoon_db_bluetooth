@@ -10,6 +10,8 @@
 #define USERDATA_TAG "hs._db.bluetooth"
 // A Lua table where we will store any references to Lua objects needed by this library.
 global_variable int refTable;
+// A set of device properties that can be read via `devicePropertiesToQuery`.
+global_variable NSSet *readableDeviceProperties;
 
 /***********/
 /* Helpers */
@@ -71,13 +73,14 @@ global_variable int refTable;
 
 @interface HSBluetoothWatcher: NSObject
 @property int callbackRef;
+@property NSSet *devicePropertiesToQuery;
 @property IOBluetoothUserNotification *connectReceipt;
 @property NSMutableArray *deviceConnections;
 @end
 
 @interface HSBluetoothDevice : NSObject
-+ (NSDictionary *) GetProperties:(IOBluetoothDevice *)device;
 + (NSString *) GetDeviceCategory:(IOBluetoothDevice *)device;
++ (NSDictionary *) GetProperties:(IOBluetoothDevice *)device properties:(NSSet *)properties;
 @end
 
 @implementation HSBluetoothDevice
@@ -99,14 +102,86 @@ global_variable int refTable;
   return(deviceCategory);
 }
 
-+ (NSDictionary *) GetProperties:(IOBluetoothDevice *)device {
-  NSDictionary *deviceProperties = @
-    {
-     @"name": [device name],
-     @"isConnected": [NSNumber numberWithBool:[device isConnected]],
-     @"deviceClass": [HSBluetoothDevice GetDeviceCategory:device],
-    };
-  return deviceProperties;
++ (void (^)(void **, const char **)) GetProperty:(IOBluetoothDevice *)device
+               propertyName:(NSString *)propertyName {
+  SEL propertySelector = NSSelectorFromString(propertyName);
+  if (![device respondsToSelector:propertySelector]) {
+    // Unrecognized property.
+    return(NULL);
+  }
+
+  NSMethodSignature *signature = [[device class] instanceMethodSignatureForSelector:propertySelector];
+  NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+
+  void *returnValueBuffer = (void *)malloc([signature methodReturnLength]);
+
+  [invocation setSelector:propertySelector];
+  [invocation setTarget:device];
+  [invocation invoke];
+  [invocation getReturnValue:returnValueBuffer];
+
+  // Return a block capable of producing the raw property value and its type encoding.
+  void (^property)(void **, const char **) = ^(void **rawValue, const char **valueType){
+    *rawValue = returnValueBuffer;
+    *valueType = [signature methodReturnType];
+  };
+
+  return(property);
+}
+
++ (NSDictionary *) GetProperties:(IOBluetoothDevice *)device
+                      properties:(NSSet *)properties {
+  NSMutableDictionary *deviceProperties = [[NSMutableDictionary alloc] initWithCapacity:[properties count]];
+
+  [properties enumerateObjectsUsingBlock:^(NSString *propertyName, __unused BOOL *stop) {
+      // My own property.
+      if ([propertyName isEqual:@"deviceCategory"]) {
+        [deviceProperties setObject:[HSBluetoothDevice GetDeviceCategory:device] forKey:@"deviceCategory"];
+        return;
+      }
+
+      void (^property)(void **, const char **) = [HSBluetoothDevice GetProperty:device propertyName:propertyName];
+      if (!property) return;
+
+      // Read out the property info.
+      void *rawPropertyValue;
+      const char *propertyValueType;
+      property(&rawPropertyValue, &propertyValueType);
+
+      /**
+       * NOTE:
+       * Ideally, we'd simply be able to do something like this:
+       *
+       *     [deviceProperties setObject:rawPropertyValue
+       *                          forKey:propertyName];
+       *
+       * However, that is not an option: we can't store raw pointers in a
+       * dictionary, and even if we could, there'd be no way to give LuaSkin
+       * the type information it needs to properly de/serializing the data.
+       * So, we need to cast the data to the appropriate type ourselves.
+       */
+      if (strcmp(@encode(NSObject *), propertyValueType) == 0) {
+        NSObject *val = *(__weak NSObject **)rawPropertyValue;
+
+        if ([val isKindOfClass:[NSString class]]) {
+          NSString *str = (NSString *)val;
+          [deviceProperties setObject:str forKey:propertyName];
+        } else {
+          [LuaSkin logError:[NSString stringWithFormat:@"unrecognized object type for property '%@': %@", propertyName, [val className]]];
+        }
+      } else if (strcmp(@encode(BOOL), propertyValueType) == 0) {
+        BOOL val = *(BOOL *)rawPropertyValue;
+        [deviceProperties setObject:[NSNumber numberWithBool:val] forKey:propertyName];
+      } else if (strcmp(@encode(UInt32), propertyValueType) == 0) {
+        UInt32 val = *(UInt32 *)rawPropertyValue;
+        [deviceProperties setObject:[NSNumber numberWithUnsignedInt:val] forKey:propertyName];
+      } else {
+        [LuaSkin logError:[NSString stringWithFormat:@"unrecognized property type for property '%@': %s", propertyName, propertyValueType]];
+      }
+    }];
+
+  // Return a frozen copy of our properties table.
+  return([[NSDictionary alloc] initWithDictionary:deviceProperties]);
 }
 @end
 
@@ -118,6 +193,7 @@ global_variable int refTable;
     _callbackRef = LUA_NOREF;
     _connectReceipt = NULL;
     _deviceConnections = [[NSMutableArray alloc] init];
+    _devicePropertiesToQuery = readableDeviceProperties;
   }
 
   return(self);
@@ -165,7 +241,7 @@ global_variable int refTable;
 - (void) _CallbackWithDevice:(IOBluetoothDevice *)device {
   LuaSkin *Skin = [LuaSkin shared];
   lua_State *L = [Skin L];
-  NSDictionary *deviceProperties = [HSBluetoothDevice GetProperties:device];
+  NSDictionary *deviceProperties = [HSBluetoothDevice GetProperties:device properties:_devicePropertiesToQuery];
 
   // Push our callback and its arguments onto the stack, then call it.
   [Skin pushLuaRef:refTable ref:_callbackRef];
@@ -198,6 +274,12 @@ id ToHSBluetoothWatcherFromUserdata(lua_State *L, int index) {
 /******************/
 /* Lua Module API */
 /******************/
+
+internal int HSBluetooth_ReadableDeviceProperties(__unused lua_State *L) {
+  LuaSkin *Skin = [LuaSkin shared];
+  [Skin pushNSObject:readableDeviceProperties];
+  return(1);
+}
 
 internal int HSBluetooth_NewWatcher(lua_State *L) {
   // Get a reference to our Lua 'skin', our interface with Lua.
@@ -237,6 +319,60 @@ internal int HSBluetooth_NewWatcher(lua_State *L) {
 /*****************************/
 /* Bluetooth Watcher Lua API */
 /*****************************/
+
+internal int userdata_HSBluetoothWatcher_DevicePropertiesToQuery(lua_State *L) {
+  LuaSkin *Skin = [LuaSkin shared];
+  // Since this is a method, the first argument is the watcher itself (the userdata tag).
+  // Then comes the real arguments to the method: ours only accepts an optional list of strings.
+  [Skin checkArgs:LS_TUSERDATA, USERDATA_TAG, LS_TTABLE | LS_TOPTIONAL, LS_TBREAK];
+
+  HSBluetoothWatcher *BTWatcher = [Skin toNSObjectAtIndex:1];
+
+  if(lua_gettop(L) == 1) {
+    // When no input is given, act as a getter.
+    [Skin pushNSObject:BTWatcher.devicePropertiesToQuery];
+  } else {
+    NSArray *deviceProperties = [Skin toNSObjectAtIndex:2];
+
+    // Validate our input.
+    if ([deviceProperties isKindOfClass:[NSArray class]]) {
+      // NOTE: `__block` allows changes to this variable within nested blocks to be
+      // seen by the enclosing scope.
+      __block NSString *errorMessage;
+      __block NSMutableSet *devicePropertiesToQuery = [[NSMutableSet alloc] initWithCapacity:[deviceProperties count]];
+
+      [deviceProperties enumerateObjectsUsingBlock:^(NSString *item, NSUInteger index, BOOL *stop) {
+          if ([item isKindOfClass:[NSString class]]) {
+            if ([readableDeviceProperties containsObject:item]) {
+              [devicePropertiesToQuery addObject:item];
+            } else {
+              // Ignore unreadable properties.
+              [LuaSkin logWarn:[NSString stringWithFormat:@"reading '%@' from IOBluetoothDevice is not supported", item]];
+            }
+          } else {
+            *stop = YES;
+            errorMessage = [NSString stringWithFormat:@"expected string at index %lu", index + 1]; // `lu` == long unsigned
+          }
+        }];
+
+      if(errorMessage) {
+        return luaL_argerror(L, 2, [errorMessage UTF8String]);
+      }
+
+      // [LuaSkin logDebg:@"configuring device query"];
+
+      // Store the device properties.
+      BTWatcher.devicePropertiesToQuery = [NSSet setWithSet:devicePropertiesToQuery];
+
+      // Return this watcher.
+      lua_settop(L, 1);
+    } else {
+      return luaL_argerror(L, 2, "expected an array of device properties");
+    }
+  }
+
+  return(1);
+}
 
 internal int userdata_HSBluetoothWatcher_Start(lua_State *L) {
   LuaSkin *Skin = [LuaSkin shared];
@@ -337,6 +473,7 @@ internal int userdata_HSBluetoothWatcher_GC(lua_State *L) {
 */
 global_variable const luaL_Reg userdata_HSBluetoothWatcher_publicAPI[] =
   {
+   {"devicePropertiesToQuery", userdata_HSBluetoothWatcher_DevicePropertiesToQuery},
    {"start", userdata_HSBluetoothWatcher_Start},
    {"stop", userdata_HSBluetoothWatcher_Stop},
    {"__tostring", userdata_HSBluetoothWatcher_ToString},
@@ -350,6 +487,7 @@ global_variable const luaL_Reg userdata_HSBluetoothWatcher_publicAPI[] =
 global_variable luaL_Reg publicAPI[] =
   {
    {"newWatcher", HSBluetooth_NewWatcher},
+   {"readableDeviceProperties", HSBluetooth_ReadableDeviceProperties},
    {0, 0} // or perhaps {NULL, NULL}
   };
 
@@ -367,6 +505,22 @@ int luaopen_hs__db_bluetooth_internal(lua_State __unused *L) {
   [Skin registerLuaObjectHelper:ToHSBluetoothWatcherFromUserdata
                        forClass:"HSBluetoothWatcher"
             withUserdataMapping:USERDATA_TAG];
+
+  // Important properties of an IOBluetoothDevice.
+  readableDeviceProperties = [NSSet setWithObjects:
+                                    @"addressString",
+                                    @"name",
+                                    @"classOfDevice",
+                                    @"deviceClassMajor",
+                                    @"deviceClassMinor",
+                                    @"deviceCategory", // my own classification
+                                    @"serviceClassMajor",
+                                    @"isHandsFreeDevice",
+                                    @"nameOrAddress",
+                                    @"isConnected",
+                                    @"isFavorite",
+                                    @"isPaired",
+                                    nil];
 
   return(1);
 }
