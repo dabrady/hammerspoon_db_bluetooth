@@ -1,11 +1,7 @@
 @import Cocoa;
 @import LuaSkin;
 @import IOBluetooth;
-
-// The many faces of 'static'. Readability is important.
-#define internal static
-#define local_persist static
-#define global_variable static
+#import "macros.h"
 
 #define USERDATA_TAG "hs._db.bluetooth"
 // A Lua table where we will store any references to Lua objects needed by this library.
