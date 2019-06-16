@@ -111,6 +111,18 @@ global_variable int refTable;
 @end
 
 @implementation HSBluetoothWatcher
+- (instancetype) init {
+  self = [super init];
+
+  if (self) {
+    _callbackRef = LUA_NOREF;
+    _connectReceipt = NULL;
+    _deviceConnections = [[NSMutableArray alloc] init];
+  }
+
+  return(self);
+}
+
 - (void) HandleConnect:(IOBluetoothUserNotification *)note
                 device:(IOBluetoothDevice *)device {
   // Hammerspoon crashes when Lua code doesn't execute on the main thread.
@@ -223,7 +235,6 @@ internal int userdata_HSBluetoothWatcher_Start(lua_State *L) {
   HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
 
   // Register for bluetooth connection notifications.
-  BTWatcher.deviceConnections = [[NSMutableArray alloc] init];
   BTWatcher.connectReceipt = [IOBluetoothDevice registerForConnectNotifications:BTWatcher
                                                                        selector:@selector(HandleConnect:device:)];
 
