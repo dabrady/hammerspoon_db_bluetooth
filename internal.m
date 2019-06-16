@@ -2,13 +2,14 @@
 #import <LuaSkin/LuaSkin.h>
 #import <IOBluetooth/IOBluetooth.h>
 
-// The many faces of 'static'. :P
+// The many faces of 'static'. Readability is important.
 #define internal static
 #define local_persist static
 #define global_variable static
 
 #define USERDATA_TAG "hs._db.bluetooth"
-int refTable;
+// A Lua table where we will store any references to Lua objects needed by this library.
+global_variable int refTable;
 
 /***********/
 /* Helpers */
@@ -32,7 +33,7 @@ int refTable;
   NSMethodSignature *signature = [self methodSignatureForSelector:selector];
 
   if (!signature) {
-    NSLog(@"NSObject: Method signature could not be created.");
+    [LuaSkin logError:@"NSObject: Method signature could not be created."];
     return;
   }
 
@@ -75,27 +76,27 @@ int refTable;
 @end
 
 @interface HSBluetoothDevice : NSObject
-+ (NSString *) GetDeviceClass:(IOBluetoothDevice *)device;
 + (NSDictionary *) GetProperties:(IOBluetoothDevice *)device;
++ (NSString *) GetDeviceCategory:(IOBluetoothDevice *)device;
 @end
 
 @implementation HSBluetoothDevice
-+ (NSString *) GetDeviceClass:(IOBluetoothDevice *)device {
++ (NSString *) GetDeviceCategory:(IOBluetoothDevice *)device {
   BluetoothClassOfDevice deviceClassRef = [device classOfDevice];
   // TODO: Make this an enum and expose it?
-  NSString *deviceClass;
+  NSString *deviceCategory;
   if (deviceClassRef == 0) {
-    deviceClass = @"uncategorized";
+    deviceCategory = @"uncategorized";
   } else if (deviceClassRef & (1 << 21)) {
-    deviceClass = @"audio";
+    deviceCategory = @"audio";
   } else if (deviceClassRef & ((1 << 10) | (1 << 8))) {
-    deviceClass = @"peripheral";
+    deviceCategory = @"peripheral";
   } else if (deviceClassRef & (1 << 9)) {
-    deviceClass = @"phone";
+    deviceCategory = @"phone";
   } else {
-    deviceClass = [NSString stringWithFormat:@"%#x (unrecognized)", deviceClassRef];
+    deviceCategory = [NSString stringWithFormat:@"%#x (unrecognized)", deviceClassRef];
   }
-  return deviceClass;
+  return(deviceCategory);
 }
 
 + (NSDictionary *) GetProperties:(IOBluetoothDevice *)device {
@@ -103,7 +104,7 @@ int refTable;
     {
      @"name": [device name],
      @"isConnected": [NSNumber numberWithBool:[device isConnected]],
-     @"deviceClass": [HSBluetoothDevice GetDeviceClass:device],
+     @"deviceClass": [HSBluetoothDevice GetDeviceCategory:device],
     };
   return deviceProperties;
 }
@@ -233,7 +234,7 @@ internal int userdata_HSBluetoothWatcher_Start(lua_State *L) {
 
 internal int userdata_HSBluetoothWatcher_Stop(lua_State *L) {
   void **UserData = (void **)luaL_checkudata(L, 1, USERDATA_TAG);
-  if(!UserData) {
+  if (!UserData) {
     return(0);
   }
 
@@ -241,13 +242,13 @@ internal int userdata_HSBluetoothWatcher_Stop(lua_State *L) {
   HSBluetoothWatcher *BTWatcher = (__bridge HSBluetoothWatcher *)(*UserData);
 
   // Unregister for bluetooth connection notfications.
-  if(BTWatcher.connectReceipt) {
+  if (BTWatcher.connectReceipt) {
     [BTWatcher.connectReceipt unregister];
   }
   BTWatcher.connectReceipt = nil;
 
   // Unregister from device disconnect notifications.
-  if(BTWatcher.deviceConnections) {
+  if (BTWatcher.deviceConnections) {
     for(id connection in BTWatcher.deviceConnections) {
       [connection unregister];
     }
@@ -338,8 +339,8 @@ global_variable luaL_Reg publicAPI[] =
    This function registers our public API with the LuaSkin bridge for Hammerspoon.
  */
 int luaopen_hs__db_bluetooth_internal(lua_State __unused *L) {
-  LuaSkin *skin = [LuaSkin shared];
-  refTable = [skin registerLibraryWithObject:USERDATA_TAG
+  LuaSkin *Skin = [LuaSkin shared];
+  refTable = [Skin registerLibraryWithObject:USERDATA_TAG
                                    functions:publicAPI
                                metaFunctions:nil
                              objectFunctions:userdata_HSBluetoothWatcher_publicAPI];
