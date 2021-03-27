@@ -18,6 +18,8 @@ internal int pushReadableDeviceProperties(__unused lua_State *L) {
    Public API for this module.
 */
 global_variable luaL_Reg publicAPI[] = {{NULL, NULL}};
+global_variable luaL_Reg metaAPI[] = {{NULL, NULL}};
+global_variable luaL_Reg userdata_publicAPI[] = {{NULL, NULL}};
 
 /**
    Invoked by Lua when something `require`s our module.
@@ -28,8 +30,8 @@ int luaopen_hs__db_bluetooth_internal(lua_State *L) {
   LuaSkin *Skin = [LuaSkin shared];
   refTable = [Skin registerLibraryWithObject:USERDATA_TAG
                                    functions:publicAPI
-                               metaFunctions:nil // metaAPI
-                             objectFunctions:nil // userdata_publicAPI
+                               metaFunctions:metaAPI
+                             objectFunctions:userdata_publicAPI
               ];
 
   // Important properties of an IOBluetoothDevice.
